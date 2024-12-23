@@ -107,7 +107,7 @@ free_port() {
   fi
 }
 
-PORT=8001
+PORT=8888
 free_port $PORT
 start_gunicorn() {
   while true; do
