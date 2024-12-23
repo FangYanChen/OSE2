@@ -1,0 +1,402 @@
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley$ cd /mnt/c/Users/User/Desktop/depley/djangoappdeploy
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ ls -l deploy.sh
+-rwxrwxrwx 1 fangyanchen fangyanchen 4042 Dec 23 07:06 deploy.sh
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ chmod +x deploy.sh
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ sudo ./deploy.sh 8888
+[sudo] password for fangyanchen: 
+sudo: unable to execute ./deploy.sh: No such file or directory     
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ sudo bash deploy.sh 8888
+deploy.sh: line 2: $'\r': command not found
+deploy.sh: line 9: $'\r': command not found
+deploy.sh: line 12: $'\r': command not found
+deploy.sh: line 96: syntax error near unexpected token `$'{\r''    
+'eploy.sh: line 96: `free_port() {
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ cat -A deploy.sh
+#!/bin/bash^M$
+^M$
+GIT_REPO="https://github.com/DireSky/OSEExam.git"^M$
+APP_NAME="OSEExam"^M$
+APP_DIR="/var/www/$APP_NAME"^M$
+PYTHON="python3"^M$
+DATE=$(date +"%Y-%m-%d_%H-%M-%S")^M$
+PORT=$1^M$
+^M$
+LOG="/var/log/deploying.log"^M$
+echo "Django app starting: $DATE" >> $LOG^M$
+^M$
+if [ "$(id -u)" -ne 0 ]; then^M$
+  echo "Run the command with sudo" | tee -a $LOG^M$
+  exit 1^M$
+fi^M$
+^M$
+apt update && apt install -y $PYTHON $PYTHON-venv git curl net-tools || {^M$
+  echo "Package installation error" | tee -a $LOG^M$
+  exit 1^M$
+}^M$
+^M$
+apt update && apt install -y python3-pip || {^M$
+  echo "pip installation error" | tee -a $LOG^M$
+  exit 1^M$
+}^M$
+^M$
+if [ ! -d "$APP_DIR" ]; then^M$
+  git clone $GIT_REPO $APP_DIR || {^M$
+    echo "Cloning git repo error" | tee -a $LOG^M$
+    exit 1^M$
+  }^M$
+else^M$
+  echo "Dir $APP_DIR already exists" | tee -a $LOG^M$
+fi^M$
+^M$
+cd $APP_DIR || exit^M$
+^M$
+if [ ! -d "venv" ]; then^M$
+  $PYTHON -m venv venv || {^M$
+    echo "Error creating virtual environment" | tee -a $LOG^M$
+    exit 1^M$
+  }^M$
+fi^M$
+^M$
+source venv/bin/activate^M$
+^M$
+if [ -f "$APP_DIR/testPrj/requirements.txt" ]; then^M$
+  pip install Django^M$
+  pip install gunicorn^M$
+  pip install whitenoise || {^M$
+    echo "Dependency installation error" | tee -a $LOG^M$
+    deactivate^M$
+    exit 1^M$
+  }^M$
+else^M$
+  echo "requirements.txt not found" | tee -a $LOG^M$
+fi^M$
+^M$
+deactivate^M$
+^M$
+source venv/bin/activate^M$
+python $APP_DIR/testPrj/manage.py migrate || {^M$
+  echo "Migration execution error" | tee -a $LOG^M$
+  deactivate^M$
+  exit 1^M$
+}^M$
+python $APP_DIR/testPrj/manage.py collectstatic --noinput || {^M$
+  echo "Static files build error" | tee -a $LOG^M$
+  deactivate^M$
+  exit 1^M$
+}^M$
+deactivate^M$
+^M$
+SETTINGS_FILE="$APP_DIR/testPrj/testPrj/settings.py"^M$
+^M$
+if ! grep -q "whitenoise.middleware.WhiteNoiseMiddleware" "$SETTINGS_FILE"; then^M$
+  echo "Adding WhiteNoise middleware to settings.py" | tee -a $LOG^M$
+  sed -i "/'django.middleware.security.SecurityMiddleware'/a \ \ \ \ 'whitenoise.middleware.WhiteNoiseMiddleware'," "$SETTINGS_FILE"^M$
+  echo -e "\n# WhiteNoise settings" >> "$SETTINGS_FILE"^M$
+  echo "STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'" >> "$SETTINGS_FILE"^M$
+  echo "STATIC_ROOT = os.path.join(BASE_DIR, 'static')" >> "$SETTINGS_FILE"^M$
+fi^M$
+^M$
+if ! grep -q "ALLOWED_HOSTS" "$SETTINGS_FILE"; then^M$
+  echo "Adding ALLOWED_HOSTS to settings.py" | tee -a $LOG^M$
+  echo -e "\n# ALLOWED_HOSTS settings" >> "$SETTINGS_FILE"^M$
+  echo "ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '*']" >> "$SETTINGS_FILE"^M$
+fi^M$
+^M$
+if ! grep -q "STATIC_ROOT" "$SETTINGS_FILE"; then^M$
+  echo "Adding STATIC_ROOT to settings.py" | tee -a $LOG^M$
+  echo "STATIC_ROOT = os.path.join(BASE_DIR, 'static')" >> "$SETTINGS_FILE"^M$
+fi^M$
+^M$
+free_port() {^M$
+  PID=$(netstat -ltnp | grep ":$PORT " | awk '{print $7}' | cut -d'/' -f1)^M$
+  if [ ! -z "$PID" ]; then^M$
+    echo "Port $PORT is occupied by a process with PID $PID" | tee -a $LOG^M$
+    kill -9 $PID || {^M$
+      echo "Failed to terminate the process using port $PORT" | tee -a $LOG^M$
+      exit 1^M$
+    }^M$
+    echo "Process with PID $PID using port $PORT has been terminated" | tee -a $LOG^M$
+  else^M$
+    echo "Port $PORT is free" | tee -a $LOG^M$
+  fi^M$
+}^M$
+^M$
+PORT=8001^M$
+free_port $PORT^M$
+start_gunicorn() {^M$
+  while true; do^M$
+    source venv/bin/activate^M$
+    echo "Running Gunicorn..." | tee -a $LOG^M$
+    $APP_DIR/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:$PORT testPrj.wsgi:application || {^M$
+      echo "Gunicorn terminated with an error. Restarting..." | tee -a $LOG^M$
+    }^M$
+    deactivate^M$
+    sleep 3^M$
+  done^M$
+export PYTHONPATH=$APP_DIR/testPrj:$PYTHONPATH^M$
+start_gunicorn &^M$
+APP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT)^M$
+echo "You can check this url: http://localhost:$PORT  or  http://127.0.0.1:$PORT"^M$
+^M$
+if [ "$APP_STATUS" -eq 200 ]; then^M$
+  echo "The application has been successfully deployed and is available at http://localhost:$PORT" | tee -a $LOG^M$
+else^M$
+  echo "Error: The application is not available. Check the settings" | tee -a $LOG^M$
+fi^M$
+^M$
+exit 0^M$
+^M$
+#chmod +x <M-PM-=M-PM-0M-PM-7M-PM-2M-PM-0M-PM-=M-PM-8M-PM-5 M-QM-^DM-PM-0M-PM-9M-PM-;M-PM-0>.sh^M$
+#./<M-PM-=M-PM-0M-PM-7M-PM-2M-PM-0M-PM-=M-PM-8M-PM-5 M-QM-^DM-PM-0M-PM-9M-PM-;M-PM-0>.sh   (sudo)^M$
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ sudo apt install dos2unix
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+The following NEW packages will be installed:
+  dos2unix
+0 upgraded, 1 newly installed, 0 to remove and 29 not upgraded.
+Need to get 501 kB of archives.
+After this operation, 1868 kB of additional disk space will be used.
+Get:1 http://archive.ubuntu.com/ubuntu noble/universe amd64 dos2unix amd64 7.5.1-1 [501 kB]
+Fetched 501 kB in 2s (234 kB/s)
+Selecting previously unselected package dos2unix.
+(Reading database ... 48104 files and directories currently installed.)
+Preparing to unpack .../dos2unix_7.5.1-1_amd64.deb ...
+Unpacking dos2unix (7.5.1-1) ...
+Setting up dos2unix (7.5.1-1) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ dos2unix deploy.sh
+dos2unix: converting file deploy.sh to Unix format...
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$ cat -A deploy.sh
+#!/bin/bash$
+$
+GIT_REPO="https://github.com/DireSky/OSEExam.git"$
+APP_NAME="OSEExam"$
+APP_DIR="/var/www/$APP_NAME"$
+PYTHON="python3"$
+DATE=$(date +"%Y-%m-%d_%H-%M-%S")$
+PORT=$1$
+$
+LOG="/var/log/deploying.log"$
+echo "Django app starting: $DATE" >> $LOG$
+$
+if [ "$(id -u)" -ne 0 ]; then$
+  echo "Run the command with sudo" | tee -a $LOG$
+  exit 1$
+fi$
+$
+apt update && apt install -y $PYTHON $PYTHON-venv git curl net-tools || {$
+  echo "Package installation error" | tee -a $LOG$
+  exit 1$
+}$
+$
+apt update && apt install -y python3-pip || {$
+  echo "pip installation error" | tee -a $LOG$
+  exit 1$
+}$
+$
+if [ ! -d "$APP_DIR" ]; then$
+  git clone $GIT_REPO $APP_DIR || {$
+    echo "Cloning git repo error" | tee -a $LOG$
+    exit 1$
+  }$
+else$
+  echo "Dir $APP_DIR already exists" | tee -a $LOG$
+fi$
+$
+cd $APP_DIR || exit$
+$
+if [ ! -d "venv" ]; then$
+  $PYTHON -m venv venv || {$
+    echo "Error creating virtual environment" | tee -a $LOG$
+    exit 1$
+  }$
+fi$
+$
+source venv/bin/activate$
+$
+if [ -f "$APP_DIR/testPrj/requirements.txt" ]; then$
+  pip install Django$
+  pip install gunicorn$
+  pip install whitenoise || {$
+    echo "Dependency installation error" | tee -a $LOG$
+    deactivate$
+    exit 1$
+  }$
+else$
+  echo "requirements.txt not found" | tee -a $LOG$
+fi$
+$
+deactivate$
+$
+source venv/bin/activate$
+python $APP_DIR/testPrj/manage.py migrate || {$
+  echo "Migration execution error" | tee -a $LOG$
+  deactivate$
+  exit 1$
+}$
+python $APP_DIR/testPrj/manage.py collectstatic --noinput || {$
+  echo "Static files build error" | tee -a $LOG$
+  deactivate$
+  exit 1$
+}$
+deactivate$
+$
+SETTINGS_FILE="$APP_DIR/testPrj/testPrj/settings.py"$
+$
+if ! grep -q "whitenoise.middleware.WhiteNoiseMiddleware" "$SETTINGS_FILE"; then$
+  echo "Adding WhiteNoise middleware to settings.py" | tee -a $LOG$
+  sed -i "/'django.middleware.security.SecurityMiddleware'/a \ \ \ \ 'whitenoise.middleware.WhiteNoiseMiddleware'," "$SETTINGS_FILE"$
+  echo -e "\n# WhiteNoise settings" >> "$SETTINGS_FILE"$
+  echo "STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'" >> "$SETTINGS_FILE"$
+  echo "STATIC_ROOT = os.path.join(BASE_DIR, 'static')" >> "$SETTINGS_FILE"$
+fi$
+$
+if ! grep -q "ALLOWED_HOSTS" "$SETTINGS_FILE"; then$
+  echo "Adding ALLOWED_HOSTS to settings.py" | tee -a $LOG$
+  echo -e "\n# ALLOWED_HOSTS settings" >> "$SETTINGS_FILE"$
+  echo "ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '*']" >> "$SETTINGS_FILE"$
+fi$
+$
+if ! grep -q "STATIC_ROOT" "$SETTINGS_FILE"; then$
+  echo "Adding STATIC_ROOT to settings.py" | tee -a $LOG$
+  echo "STATIC_ROOT = os.path.join(BASE_DIR, 'static')" >> "$SETTINGS_FILE"$
+fi$
+$
+free_port() {$
+  PID=$(netstat -ltnp | grep ":$PORT " | awk '{print $7}' | cut -d'/' -f1)$
+  if [ ! -z "$PID" ]; then$
+    echo "Port $PORT is occupied by a process with PID $PID" | tee -a $LOG$
+    kill -9 $PID || {$
+      echo "Failed to terminate the process using port $PORT" | tee -a $LOG$
+      exit 1$
+    }$
+    echo "Process with PID $PID using port $PORT has been terminated" | tee -a $LOG$
+  else$
+    echo "Port $PORT is free" | tee -a $LOG$
+  fi$
+}$
+$
+PORT=8001$
+free_port $PORT$
+start_gunicorn() {$
+  while true; do$
+    source venv/bin/activate$
+    echo "Running Gunicorn..." | tee -a $LOG$
+    $APP_DIR/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:$PORT testPrj.wsgi:application || {$
+      echo "Gunicorn terminated with an error. Restarting..." | tee -a $LOG$
+    }$
+    deactivate$
+    sleep 3$
+  done$
+}$
+$
+export PYTHONPATH=$APP_DIR/testPrj:$PYTHONPATH$
+start_gunicorn &$
+APP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT)$
+echo "You can check this url: http://localhost:$PORT  or  http://127.0.0.1:$PORT"$
+$
+if [ "$APP_STATUS" -eq 200 ]; then$
+  echo "The application has been successfully deployed and is available at http://localhost:$PORT" | tee -a $LOG$
+else$
+  echo "Error: The application is not available. Check the settings" | tee -a $LOG$
+fi$
+Reading state information... Done
+python3 is already the newest version (3.12.3-0ubuntu2).
+python3-venv is already the newest version (3.12.3-0ubuntu2).
+git is already the newest version (1:2.43.0-1ubuntu7.1).
+git set to manually installed.
+The following additional packages will be installed:
+  libcurl3t64-gnutls libcurl4t64
+The following NEW packages will be installed:
+  net-tools
+The following packages will be upgraded:
+  curl libcurl3t64-gnutls libcurl4t64
+3 upgraded, 1 newly installed, 0 to remove and 26 not upgraded.
+Need to get 204 kB/1105 kB of archives.
+After this operation, 811 kB of additional disk space will be used.
+Get:1 http://archive.ubuntu.com/ubuntu noble/main amd64 net-tools amd64 2.10-0.1ubuntu4 [204 kB]
+Fetched 204 kB in 1s (138 kB/s)     
+(Reading database ... 48228 files and directories currently installed.)
+Preparing to unpack .../curl_8.5.0-2ubuntu10.6_amd64.deb ...
+Unpacking curl (8.5.0-2ubuntu10.6) over (8.5.0-2ubuntu10.5) ...
+Preparing to unpack .../libcurl4t64_8.5.0-2ubuntu10.6_amd64.deb ...
+Unpacking libcurl4t64:amd64 (8.5.0-2ubuntu10.6) over (8.5.0-2ubuntu10.5) ...
+Preparing to unpack .../libcurl3t64-gnutls_8.5.0-2ubuntu10.6_amd64.deb ...
+Unpacking libcurl3t64-gnutls:amd64 (8.5.0-2ubuntu10.6) over (8.5.0-2ubuntu10.5) ...
+Selecting previously unselected package net-tools.
+Preparing to unpack .../net-tools_2.10-0.1ubuntu4_amd64.deb ...
+Unpacking net-tools (2.10-0.1ubuntu4) ...
+Setting up net-tools (2.10-0.1ubuntu4) ...
+Setting up libcurl4t64:amd64 (8.5.0-2ubuntu10.6) ...
+Setting up libcurl3t64-gnutls:amd64 (8.5.0-2ubuntu10.6) ...
+Setting up curl (8.5.0-2ubuntu10.6) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.3) ...
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+26 packages can be upgraded. Run 'apt list --upgradable' to see them.
+Reading package lists... Done
+Building dependency tree... Done
+Reading state information... Done
+python3-pip is already the newest version (24.0+dfsg-1ubuntu1.1).
+0 upgraded, 0 newly installed, 0 to remove and 26 not upgraded.
+Cloning into '/var/www/OSEExam'...
+remote: Enumerating objects: 42, done.
+remote: Counting objects: 100% (42/42), done.
+remote: Compressing objects: 100% (32/32), done.
+remote: Total 42 (delta 7), reused 40 (delta 6), pack-reused 0 (from 0)
+Receiving objects: 100% (42/42), 14.89 KiB | 136.00 KiB/s, done.
+Resolving deltas: 100% (7/7), done.
+Collecting Django
+  Downloading Django-5.1.4-py3-none-any.whl.metadata (4.2 kB)
+Collecting asgiref<4,>=3.8.1 (from Django)
+  Downloading asgiref-3.8.1-py3-none-any.whl.metadata (9.3 kB)
+Collecting sqlparse>=0.3.1 (from Django)
+  Downloading sqlparse-0.5.3-py3-none-any.whl.metadata (3.9 kB)
+Downloading Django-5.1.4-py3-none-any.whl (8.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 8.3/8.3 MB 2.9 MB/s eta 0:00:00
+Downloading asgiref-3.8.1-py3-none-any.whl (23 kB)
+Downloading sqlparse-0.5.3-py3-none-any.whl (44 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.4/44.4 kB 322.5 kB/s eta 0:00:00
+Installing collected packages: sqlparse, asgiref, Django
+Successfully installed Django-5.1.4 asgiref-3.8.1 sqlparse-0.5.3
+Collecting gunicorn
+  Downloading gunicorn-23.0.0-py3-none-any.whl.metadata (4.4 kB)
+Collecting packaging (from gunicorn)
+  Downloading packaging-24.2-py3-none-any.whl.metadata (3.2 kB)
+Downloading gunicorn-23.0.0-py3-none-any.whl (85 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 85.0/85.0 kB 99.5 kB/s eta 0:00:00
+Downloading packaging-24.2-py3-none-any.whl (65 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 65.5/65.5 kB 25.6 kB/s eta 0:00:00
+Installing collected packages: packaging, gunicorn
+Successfully installed gunicorn-23.0.0 packaging-24.2
+Collecting whitenoise
+  Downloading whitenoise-6.8.2-py3-none-any.whl.metadata (3.6 kB)
+Downloading whitenoise-6.8.2-py3-none-any.whl (20 kB)
+Installing collected packages: whitenoise
+Successfully installed whitenoise-6.8.2
+Operations to perform:
+  Apply all migrations: admin, auth, contenttypes, core, sessions
+Running migrations:
+  No migrations to apply.
+
+127 static files copied to '/var/www/OSEExam/testPrj/static'.
+Adding WhiteNoise middleware to settings.py
+Port 8001 is free
+Running Gunicorn...
+You can check this url: http://localhost:8001  or  http://127.0.0.1:8001
+Error: The application is not available. Check the settings
+fangyanchen@Asus:/mnt/c/Users/User/Desktop/depley/djangoappdeploy$
+
+
+sudo apt install dos2unix
+dos2unix deploy.sh
+cat -A deploy.sh
+chmod +x deploy.sh
+sudo ./deploy.sh 8888
